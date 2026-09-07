@@ -1,0 +1,218 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://internal/uniware/shipping-provider-integration/integration-spec.schema.json",
+  "title": "IntegrationSpec",
+  "description": "Portable, machine- and human-readable output of Phase A (analysis). Every field traces to a concept confirmed against real Uniware source or a real reference integration in knowledge/*.md and rules/*.md — this schema does not invent structure beyond what those files establish. Field-level 'source' tags indicate provenance per the source-of-truth hierarchy in SKILL.md.",
+  "type": "object",
+  "required": ["provider", "capabilities", "sourceConfiguration", "statusMappings", "assumptions", "questions", "confidence", "generationGate"],
+  "properties": {
+    "provider": {
+      "type": "object",
+      "description": "Maps to ShippingProviderSource identity fields (entity-model.md).",
+      "required": ["name", "code"],
+      "properties": {
+        "name": { "type": "string", "description": "ShippingProviderSource.name" },
+        "code": { "type": "string", "pattern": "^[A-Z0-9_]+$", "description": "ShippingProviderSource.code — uppercase, underscore-separated, unique. See source-rules.md #1." },
+        "closestReferenceIntegration": {
+          "type": "string",
+          "enum": ["fedex", "shiprocket", "clickpost", "bluedart", "dtdc", "none"],
+          "description": "Which Ref/ integration this provider structurally resembles most, used as a pattern not copied verbatim (README.md)."
+        },
+        "referenceSelectionReason": { "type": "string" },
+        "referenceDifferences": { "type": "string", "description": "Explicitly what differs from the chosen reference — required whenever closestReferenceIntegration != none." }
+      }
+    },
+    "authentication": {
+      "type": "object",
+      "description": "See knowledge/script-engine.md auth-pattern catalogue. Do not force-fit a provider's real auth flow into one of the four catalogued patterns if it doesn't match.",
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "enum": ["oauth2-client-credentials", "email-password-login", "static-long-lived-token", "jwt-login-client-expiry", "other"]
+        },
+        "patternDescription": { "type": "string", "description": "Required if pattern is 'other'." },
+        "tokenUrl": { "type": "string" },
+        "requiresProactiveExpiryCheck": { "type": "boolean", "description": "Whether the verification script should proactively check token validity (FedEx/Shiprocket pattern) vs only refresh when blank (DTDC pattern, no refresh logic present at all)." },
+        "splitShipmentTrackingCredentials": {
+          "type": "object",
+          "description": "Only present if the provider requires separate shipment-vs-tracking credentials. See connector-rules.md — two valid patterns exist, pick one deliberately.",
+          "properties": {
+            "required": { "type": "boolean" },
+            "pattern": { "type": "string", "enum": ["two-param-pairs-one-connector", "two-connectors"] },
+            "reason": { "type": "string" }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Maps to ShippingProviderSource boolean/script properties (entity-model.md). Absence of a capability must be explicit, not implied by omission.",
+      "required": ["createShipment", "generateLabel", "trackShipment", "cancelShipment", "manifest", "reversePickup", "exchange", "isShippingAggregator", "multiPartShipment"],
+      "properties": {
+        "createShipment": { "type": "boolean" },
+        "generateLabel": { "type": "boolean" },
+        "trackShipment": { "type": "boolean" },
+        "cancelShipment": { "type": "boolean" },
+        "manifest": { "type": "boolean", "description": "false means post.manifest.script is left unset — see db-rules.md." },
+        "schedulePickup": { "type": "boolean", "description": "No worked example in any of the five reference sources — see entity-model.md. Set true only with an explicit design, not a copied pattern." },
+        "reversePickup": { "type": "boolean" },
+        "exchange": { "type": "boolean" },
+        "isShippingAggregator": { "type": "boolean" },
+        "multiPartShipment": { "type": "boolean", "description": "See script-rules.md #10 — only true if the provider API actually returns per-piece AWBs." }
+      }
+    },
+    "apis": {
+      "type": "object",
+      "description": "One entry per capability that is true. Each entry describes the real HTTP contract, not a generated stub.",
+      "properties": {
+        "createShipment": { "$ref": "#/definitions/apiEndpoint" },
+        "generateLabel": { "$ref": "#/definitions/apiEndpoint" },
+        "trackShipment": { "$ref": "#/definitions/apiEndpoint" },
+        "cancelShipment": { "$ref": "#/definitions/apiEndpoint" },
+        "manifest": { "$ref": "#/definitions/apiEndpoint" }
+      }
+    },
+    "fieldMappings": {
+      "type": "array",
+      "description": "Per-field mapping table for the create-shipment payload. Mirrors the structure jira.md's example ticket used, generalized.",
+      "items": {
+        "type": "object",
+        "required": ["providerField", "uniwareSource", "mandatory", "source"],
+        "properties": {
+          "providerField": { "type": "string" },
+          "uniwareSource": { "type": "string", "description": "e.g. 'shippingAddress.pincode', or a connector param name, or a fixed literal." },
+          "mandatory": { "type": "boolean" },
+          "domesticEquivalent": { "type": "string", "description": "If a comparable domestic/existing integration field can be lifted, name it; note format differences explicitly rather than assuming reuse is safe." },
+          "source": { "type": "string", "enum": ["JIRA", "API-DOC", "UNIWARE-CODE", "REFERENCE-INTEGRATION", "RULE"] }
+        }
+      }
+    },
+    "labelAcquisition": {
+      "type": "object",
+      "description": "See script-rules.md #6 — two confirmed patterns.",
+      "properties": {
+        "pattern": { "type": "string", "enum": ["base64-in-json-to-file", "http-get-download-to-file", "other"] },
+        "persistedVia": { "type": "string", "enum": ["s3-upload", "local-path-only", "other"], "description": "Both confirmed reference examples (FedEx, Shiprocket) upload to S3 for a durable URL — see script-engine.md." }
+      }
+    },
+    "statusMappings": {
+      "type": "array",
+      "description": "Maps directly to shipment_tracking_status_mapping rows. See status-mapping-rules.md — this is DB-driven, never script-hardcoded, regardless of what a source ticket may describe.",
+      "items": {
+        "type": "object",
+        "required": ["providerStatus", "uniwareStatusCode", "type", "confidence"],
+        "properties": {
+          "providerStatus": { "type": "string", "description": "The exact raw string/code the provider's API returns." },
+          "uniwareStatusCode": { "type": "string", "description": "Must be an existing shipment_tracking_status.code — do not invent new ones (status-mapping-rules.md rule 4)." },
+          "type": { "type": "string", "enum": ["SHIP_TO_CUSTOMER", "REVERSE_PICKUP", "RETURN_TO_ORIGIN"] },
+          "providerDescription": { "type": "string" },
+          "reason": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] }
+        }
+      }
+    },
+    "sourceConfiguration": {
+      "type": "object",
+      "description": "Maps to ShippingProviderSource.shippingSourceProperties. Keys must come from the table in entity-model.md, or be explicitly marked scriptOnly.",
+      "properties": {
+        "properties": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "value"],
+            "properties": {
+              "name": { "type": "string" },
+              "value": { "type": "string" },
+              "encodingNote": { "type": "string", "description": "Required for any boolean-valued property — state which encoding convention applies (source-rules.md #4)." },
+              "scriptOnly": { "type": "boolean", "description": "true if this key has no Java getter and is read only via getPropertyValue() inside a script." }
+            }
+          }
+        }
+      }
+    },
+    "connectorConfiguration": {
+      "type": "array",
+      "description": "Maps to ShippingSourceConnector + ShippingSourceConnectorParameter. See connector-rules.md.",
+      "items": {
+        "type": "object",
+        "required": ["name", "displayName", "requiredInAwbFetch", "requiredInTracking", "validateInAwbFetch", "verificationScriptName", "parameters"],
+        "properties": {
+          "name": { "type": "string" },
+          "displayName": { "type": "string" },
+          "requiredInAwbFetch": { "type": "boolean" },
+          "requiredInTracking": { "type": "boolean" },
+          "validateInAwbFetch": { "type": "boolean" },
+          "verificationScriptName": { "type": "string", "description": "Mandatory — connector-rules.md confirms there is no skip-verification path." },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "type", "encryptionRequired"],
+              "properties": {
+                "name": { "type": "string" },
+                "displayName": { "type": "string" },
+                "type": { "type": "string", "enum": ["TEXT", "PASSWORD", "HIDDEN", "CHECKBOX", "READONLY", "LAST_3_CHARS"], "description": "Authoritative: ShippingSourceConnectorParameter.Type. No SELECT — connector-rules.md." },
+                "encryptionRequired": { "type": "boolean" },
+                "persistedByVerificationScript": { "type": "boolean", "description": "true if this param is expected to be written back via the PersistentParams convention — must be true for any token/expiry field a script caches (connector-rules.md)." }
+              }
+            }
+          }
+        }
+      }
+    },
+    "scripts": {
+      "type": "object",
+      "description": "Script names to be created, matching source-level properties. See script-rules.md and db-rules.md.",
+      "properties": {
+        "trackingNumberAllocationScript": { "type": "string" },
+        "scraperScript": { "type": "string" },
+        "postManifestScript": { "type": "string" },
+        "forwardCancellationScript": { "type": "string" },
+        "reverseCancellationScript": { "type": "string" }
+      }
+    },
+    "dbRequirements": {
+      "type": "object",
+      "properties": {
+        "tenantsInScope": { "type": "string", "description": "e.g. 'all' or an explicit list — do not default to all tenants unless the ticket states platform-wide rollout (db-rules.md)." },
+        "orderingNote": { "type": "string", "default": "Mongo source insert must be confirmed visible in cache before status-mapping SQL is applied." }
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "description": "Any place Jira and this knowledge base's confirmed source-of-truth disagree. Never resolved silently — see status-mapping-rules.md for the confirmed live example.",
+      "items": {
+        "type": "object",
+        "required": ["area", "jiraSays", "sourceOfTruthSays", "resolution"],
+        "properties": {
+          "area": { "type": "string" },
+          "jiraSays": { "type": "string" },
+          "sourceOfTruthSays": { "type": "string" },
+          "resolution": { "type": "string", "enum": ["UNRESOLVED_AWAITING_DEVELOPER", "RESOLVED_FOLLOW_SOURCE_OF_TRUTH", "RESOLVED_FOLLOW_JIRA_PER_DEVELOPER"] }
+        }
+      }
+    },
+    "assumptions": { "type": "array", "items": { "type": "string" } },
+    "questions": { "type": "array", "items": { "type": "string" } },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+    "generationGate": {
+      "type": "string",
+      "enum": ["BLOCKED", "NEEDS_REVIEW", "READY"],
+      "description": "READY is required before Phase B (generation) may run. See SKILL.md."
+    }
+  },
+  "definitions": {
+    "apiEndpoint": {
+      "type": "object",
+      "required": ["method", "url", "sampleRequestAvailable", "sampleResponseAvailable"],
+      "properties": {
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE"] },
+        "url": { "type": "string" },
+        "sampleRequestAvailable": { "type": "boolean" },
+        "sampleResponseAvailable": { "type": "boolean", "description": "If false for a required API, this is a blocking question, not an assumption — see SKILL.md Phase A step 1." },
+        "successEnvelope": { "type": "string", "description": "Free-text description — do not assume a uniform success envelope across endpoints of the same provider without checking each one." },
+        "errorEnvelope": { "type": "string", "description": "Free-text description — some providers use different error shapes per endpoint or per error code (e.g. a flat shape for one error code, an array-wrapped shape for another)." }
+      }
+    }
+  }
+}
